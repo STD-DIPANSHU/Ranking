@@ -1,82 +1,91 @@
 # =========================================
 # 📂 core/leaderboard.py
 # =========================================
-import io
-from PIL import Image, ImageDraw, ImageFont
-import matplotlib
-import random
-from pymongo import DESCENDING
-from utils.db import db  # ✅ use db instance (not messages_collection)
+
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+from io import BytesIO
+import os
+
+from utils.db import get_leaderboard_from_db
 from utils.image_theme import get_theme_colors
 
-# ✅ Font fix for Heroku (emoji / symbol support)
-matplotlib.rcParams['font.family'] = 'DejaVu Sans'
 
 # =========================================
-# Get leaderboard data from MongoDB
+# 🧠 FETCH DATA
 # =========================================
-def get_leaderboard_data(limit=10):
-    messages_collection = db["messages"]  # dynamically get collection
-    top_users = list(messages_collection.find().sort("count", DESCENDING).limit(limit))
-    return top_users
+def get_leaderboard_data(mode: str):
+    """
+    mode: today / week / month / all
+    """
+    now = datetime.utcnow()
+
+    if mode == "today":
+        start_date = now.strftime("%Y-%m-%d")
+        query = {"date": start_date}
+    elif mode == "week":
+        start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+        query = {"date": {"$gte": start_date}}
+    elif mode == "month":
+        start_date = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+        query = {"date": {"$gte": start_date}}
+    else:
+        query = {}
+
+    return get_leaderboard_from_db(query)
 
 
 # =========================================
-# Create leaderboard image dynamically
+# 🎨 IMAGE CREATOR
 # =========================================
-def create_leaderboard_image(top_users, theme="default"):
-    """Generate leaderboard image dynamically."""
-    theme_colors = get_theme_colors(theme)
+def create_leaderboard_image(rows, mode="all"):
+    colors = get_theme_colors()
+    names = [r["username"] for r in rows][::-1]
+    counts = [r["count"] for r in rows][::-1]
+    total_users = len(names)
 
-    width, height = 800, 600
-    bg_color = theme_colors["background"]
-    text_color = theme_colors["text"]
-    accent_color = theme_colors["accent"]
+    fig, ax = plt.subplots(figsize=(9, max(3, 0.6 * total_users)))
+    fig.patch.set_facecolor(colors["bg"])
+    ax.set_facecolor(colors["bg"])
 
-    # Create base image
-    img = Image.new("RGB", (width, height), color=bg_color)
-    draw = ImageDraw.Draw(img)
+    bars = ax.barh(
+        range(total_users),
+        counts,
+        color=colors["bar"],
+        edgecolor=colors["bar_edge"],
+        linewidth=1.5,
+    )
 
-    # Title
-    title_font = ImageFont.truetype("arial.ttf", 40)
-    text_font = ImageFont.truetype("arial.ttf", 28)
-    small_font = ImageFont.truetype("arial.ttf", 22)
+    ax.set_yticks(range(total_users))
+    ax.set_yticklabels(names, fontsize=11, color=colors["text"], fontweight="bold")
+    ax.set_xlabel("Messages", color=colors["text"])
+    ax.set_title(
+        f"🏆 ChatFight {mode.title()} Leaderboard 🏆",
+        color=colors["title"],
+        fontsize=15,
+        fontweight="bold",
+        pad=15,
+    )
 
-    title = "🏆 ChatFight Leaderboard"
-    tw, th = draw.textsize(title, font=title_font)
-    draw.text(((width - tw) / 2, 30), title, fill=accent_color, font=title_font)
+    for bar, val in zip(bars, counts):
+        ax.text(
+            bar.get_width() + 1,
+            bar.get_y() + bar.get_height() / 2,
+            f"{val}",
+            va="center",
+            ha="left",
+            color=colors["accent"],
+            fontsize=10,
+            fontweight="bold",
+        )
 
-    # If no users
-    if not top_users:
-        draw.text((width / 2 - 100, height / 2), "No data yet 😔", fill=text_color, font=text_font)
-        bio = io.BytesIO()
-        img.save(bio, format="PNG")
-        bio.seek(0)
-        return bio
+    for spine in ax.spines.values():
+        spine.set_visible(False)
 
-    # Draw each user
-    start_y = 120
-    spacing = 40
-    medals = ["🥇", "🥈", "🥉"]
+    ax.grid(axis="x", color=colors["grid"], linestyle="--", alpha=0.3)
+    plt.tight_layout()
 
-    for i, user in enumerate(top_users):
-        username = user.get("username", "Anonymous")
-        count = user.get("count", 0)
-
-        medal = medals[i] if i < len(medals) else f"#{i+1}"
-        color = accent_color if i < 3 else text_color
-
-        y = start_y + i * spacing
-        rank_text = f"{medal} {username} — {count} msgs"
-        draw.text((100, y), rank_text, fill=color, font=text_font)
-
-    # Footer
-    footer = "✨ Powered by STD-DEEPANSHU Bot"
-    fw, fh = draw.textsize(footer, font=small_font)
-    draw.text((width - fw - 20, height - fh - 20), footer, fill=text_color, font=small_font)
-
-    # Convert to byte stream
-    bio = io.BytesIO()
-    img.save(bio, format="PNG")
-    bio.seek(0)
-    return bio
+    img_path = f"/tmp/leaderboard_{mode}.png"
+    plt.savefig(img_path, bbox_inches="tight", dpi=150, facecolor=fig.get_facecolor())
+    plt.close()
+    return img_path
