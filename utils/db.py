@@ -1,27 +1,46 @@
-# utils/db.py
+# =========================================
+# 📂 utils/db.py
+# =========================================
+
 from pymongo import MongoClient
-from config.settings import MONGO_URL
+import os
 
+# ================================
+# DATABASE CONNECTION
+# ================================
+MONGO_URL = os.getenv("MONGO_URL")
 client = MongoClient(MONGO_URL)
-db = client["chatfight_db"]
-
-# Ye collection sab jagah use hogi
+db = client["chatfight_bot"]
 messages_collection = db["messages"]
 
-# Helper functions
-def add_message(user_id, username):
-    """User ke message count badhata hai"""
+# ================================
+# 💾 Message Counting
+# ================================
+def save_message(chat_id: int, user_id: int, username: str, date: str):
     messages_collection.update_one(
-        {"user_id": user_id},
+        {"chat_id": chat_id, "user_id": user_id, "date": date},
         {"$inc": {"count": 1}, "$set": {"username": username}},
-        upsert=True
+        upsert=True,
     )
 
-def get_user_stats(user_id):
-    """User ka total count return karta hai"""
-    user = messages_collection.find_one({"user_id": user_id})
-    return user["count"] if user else 0
+# ================================
+# 📊 Leaderboard Data Fetch
+# ================================
+def get_leaderboard_from_db(query: dict):
+    pipeline = [
+        {"$match": query},
+        {"$group": {"_id": "$username", "count": {"$sum": "$count"}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 10},
+    ]
+    data = list(messages_collection.aggregate(pipeline))
+    return [{"username": d["_id"], "count": d["count"]} for d in data]
 
-def get_top_users(limit=10):
-    """Top users return karta hai message count ke hisab se"""
-    return list(messages_collection.find().sort("count", -1).limit(limit))
+# ================================
+# 🧍‍♂️ Personal Stats
+# ================================
+def get_user_stats(chat_id: int, user_id: int):
+    data = list(messages_collection.find({"chat_id": chat_id, "user_id": user_id}))
+    total = sum(d.get("count", 0) for d in data)
+    days = len(set(d["date"] for d in data))
+    return total, days
