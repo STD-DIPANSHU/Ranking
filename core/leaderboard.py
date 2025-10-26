@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from io import BytesIO
 from datetime import datetime, timedelta
-from utils.db import messages_collection
+from utils.db import messages_collection, get_top_users
 
 
 def get_leaderboard_data(chat_id, mode="today"):
