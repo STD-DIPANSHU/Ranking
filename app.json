@@ -1,0 +1,31 @@
+{
+  "name": "ChatFight-Style Telegram Bot",
+  "description": "A Telegram group message counter bot with ChatFight-style leaderboard image. Tracks daily, weekly, and all-time activity.",
+  "repository": "https://github.com/your-username/chatfight-bot",
+  "keywords": ["telegram", "bot", "leaderboard", "chatfight", "python"],
+  "env": {
+    "BOT_TOKEN": {
+      "description": "Your Telegram bot token from @BotFather",
+      "required": true
+    },
+    "MONGO_URL": {
+      "description": "MongoDB connection string (for storing user messages)",
+      "required": true
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ],
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
+  "addons": [],
+  "scripts": {
+    "postdeploy": "echo '✅ ChatFight-Style Bot deployed successfully!'"
+  }
+}
