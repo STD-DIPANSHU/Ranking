@@ -1,11 +1,11 @@
 # ================================
-# ChatFight-Style Telegram Stats Bot
+# ChatFight-Style Telegram Stats Bot (Enhanced)
 # Author: STD BHAI x GPT-5 😎
 # Deploy on: Heroku
 # ================================
 
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from pymongo import MongoClient
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
@@ -16,8 +16,8 @@ import os
 # ================================
 # CONFIGURATION
 # ================================
-TOKEN = os.getenv("BOT_TOKEN")  # Add your Bot Token in Heroku Config Var
-MONGO_URL = os.getenv("MONGO_URL")  # Add MongoDB URL in Heroku Config Var
+TOKEN = os.getenv("BOT_TOKEN")  # Telegram bot token (Heroku config var)
+MONGO_URL = os.getenv("MONGO_URL")  # MongoDB URL (Heroku config var)
 
 client = MongoClient(MONGO_URL)
 db = client["chatfight_bot"]
@@ -103,21 +103,41 @@ def create_leaderboard_image(rows, title="Leaderboard"):
     return bio
 
 # ================================
-# LEADERBOARD COMMAND
+# BUTTONS FUNCTION
 # ================================
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    args = context.args
-    mode = args[0].lower() if args else "today"
+def leaderboard_buttons(current_view):
+    buttons = [
+        [
+            InlineKeyboardButton(f"Overall {'✅' if current_view == 'all' else ''}", callback_data='view_all'),
+            InlineKeyboardButton(f"Today {'✅' if current_view == 'today' else ''}", callback_data='view_today'),
+        ],
+        [
+            InlineKeyboardButton(f"Week {'✅' if current_view == 'week' else ''}", callback_data='view_week'),
+            InlineKeyboardButton(f"Month {'✅' if current_view == 'month' else ''}", callback_data='view_month'),
+        ]
+    ]
+    return InlineKeyboardMarkup(buttons)
 
+# ================================
+# FETCH LEADERBOARD DATA
+# ================================
+def get_leaderboard_data(chat_id, mode):
     now = datetime.utcnow()
+
     if mode == "week":
         start_date = now - timedelta(days=7)
         title_text = "This Week's Leaderboard"
         query = {"chat_id": chat_id, "date": {"$gte": start_date.strftime("%Y-%m-%d")}}
+
+    elif mode == "month":
+        start_date = now - timedelta(days=30)
+        title_text = "This Month's Leaderboard"
+        query = {"chat_id": chat_id, "date": {"$gte": start_date.strftime("%Y-%m-%d")}}
+
     elif mode == "all":
         title_text = "All-Time Leaderboard"
         query = {"chat_id": chat_id}
+
     else:
         today = now.strftime("%Y-%m-%d")
         title_text = "Today's Leaderboard"
@@ -130,15 +150,68 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"$limit": 10},
     ]))
 
-    if not data:
+    rows = [{"username": d["_id"], "total": d["total"]} for d in data]
+    return rows, title_text
+
+# ================================
+# LEADERBOARD COMMAND
+# ================================
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+    mode = args[0].lower() if args else "today"
+
+    rows, title_text = get_leaderboard_data(chat_id, mode)
+    if not rows:
         await update.message.reply_text("No messages found yet. Start chatting! 💬")
         return
 
-    rows = [{"username": d["_id"], "total": d["total"]} for d in data]
     bio = create_leaderboard_image(rows, title_text)
-    caption = f"{title_text}\n\n📊 Top {len(rows)} Active Users"
 
-    await context.bot.send_photo(chat_id=chat_id, photo=bio, caption=caption)
+    # Text caption
+    caption = f"🏆 *{title_text}*\n\n"
+    for i, r in enumerate(rows, start=1):
+        caption += f"{i}. {r['username']} • {r['total']}\n"
+    caption += f"\n📊 Total users shown: {len(rows)}"
+
+    await context.bot.send_photo(
+        chat_id=chat_id,
+        photo=bio,
+        caption=caption,
+        parse_mode="Markdown",
+        reply_markup=leaderboard_buttons(mode)
+    )
+
+# ================================
+# BUTTON CALLBACK HANDLER
+# ================================
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    mode = query.data.split("_")[1]
+
+    chat_id = query.message.chat_id
+    rows, title_text = get_leaderboard_data(chat_id, mode)
+
+    if not rows:
+        await query.edit_message_caption(caption="No messages yet 💬")
+        return
+
+    bio = create_leaderboard_image(rows, title_text)
+
+    caption = f"🏆 *{title_text}*\n\n"
+    for i, r in enumerate(rows, start=1):
+        caption += f"{i}. {r['username']} • {r['total']}\n"
+    caption += f"\n📊 Total users shown: {len(rows)}"
+
+    await query.edit_message_media(
+        media={"type": "photo", "media": bio},
+    )
+    await query.edit_message_caption(
+        caption=caption,
+        parse_mode="Markdown",
+        reply_markup=leaderboard_buttons(mode)
+    )
 
 # ================================
 # PERSONAL STATS
@@ -164,6 +237,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📜 Commands:\n"
         "`/top today` — Today’s leaderboard\n"
         "`/top week` — This week\n"
+        "`/top month` — This month\n"
         "`/top all` — All time\n"
         "`/mystats` — Your message stats\n\n"
         "Add me to your group and start chatting! 💬"
@@ -179,9 +253,10 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mystats", my_stats))
     app.add_handler(CommandHandler("top", leaderboard))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern="^view_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, count_message))
 
-    print("🚀 ChatFight-Style Bot is running...")
+    print("🚀 ChatFight Enhanced Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
