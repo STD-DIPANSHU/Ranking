@@ -1,26 +1,29 @@
-# core/buttons.py
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+# =========================================
+# 📂 core/buttons.py
+# =========================================
 
-def leaderboard_buttons(active_mode="daily"):
+from telegram import InlineKeyboardButton
+
+
+def get_leaderboard_buttons(current_mode: str):
+    """
+    Returns 4 buttons for leaderboard modes with highlighting on the active one.
+    """
+    modes = ["today", "week", "month", "all"]
+    labels = {
+        "today": "🔥 Today",
+        "week": "📅 Week",
+        "month": "🗓️ Month",
+        "all": "🏆 All Time",
+    }
+
     buttons = [
-        ("Daily 🕒", "daily"),
-        ("Weekly 📅", "weekly"),
-        ("Monthly 🏆", "monthly"),
-        ("All Time 🌍", "all"),
-    ]
-
-    # ✅ Naya list create kar rahe hain (immutability problem fix)
-    keyboard = [
         [
             InlineKeyboardButton(
-                f"✅ {text}" if mode == active_mode else text,
-                callback_data=f"leaderboard_{mode}"
+                text=(f"✅ {labels[m]}" if m == current_mode else labels[m]),
+                callback_data=m,
             )
+            for m in modes
         ]
-        for text, mode in buttons
     ]
-    return InlineKeyboardMarkup(keyboard)
-() in btn.callback_data:
-                btn.text = f"✅ {btn.text}"
-
-    return InlineKeyboardMarkup(buttons)
+    return buttons
