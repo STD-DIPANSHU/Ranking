@@ -16,12 +16,16 @@ messages_collection = db["messages"]
 # ================================
 # 💾 Message Counting
 # ================================
-def save_message(chat_id: int, user_id: int, username: str, date: str):
+def increment_message_count(chat_id: int, user_id: int, username: str, date: str):
+    """Add or update message count per user per day"""
     messages_collection.update_one(
         {"chat_id": chat_id, "user_id": user_id, "date": date},
         {"$inc": {"count": 1}, "$set": {"username": username}},
         upsert=True,
     )
+
+# ✅ backward compatibility (if old code used save_message)
+save_message = increment_message_count
 
 # ================================
 # 📊 Leaderboard Data Fetch
