@@ -1,202 +1,187 @@
-#!/usr/bin/env python3
-import os
-import logging
-from datetime import datetime, timedelta
-from io import BytesIO
+# ================================
+# ChatFight-Style Telegram Stats Bot
+# Author: STD BHAI x GPT-5 😎
+# Deploy on: Heroku
+# ================================
 
-from pymongo import MongoClient
-from dateutil import tz
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
-
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from pymongo import MongoClient
+from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
-from PIL import Image
+import matplotlib.patches as patches
+from io import BytesIO
+import os
 
-# ---------- Logging ----------
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# ================================
+# CONFIGURATION
+# ================================
+TOKEN = os.getenv("BOT_TOKEN")  # Add your Bot Token in Heroku Config Var
+MONGO_URL = os.getenv("MONGO_URL")  # Add MongoDB URL in Heroku Config Var
 
-# ---------- Config / Env ----------
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-MONGO_URI = os.environ.get("MONGO_URI")
-if not TOKEN or not MONGO_URI:
-    logger.error("TELEGRAM_TOKEN and MONGO_URI must be set in environment variables.")
-    raise SystemExit("Set environment variables")
+client = MongoClient(MONGO_URL)
+db = client["chatfight_bot"]
+messages = db["messages"]
 
-TZ = os.environ.get("BOT_TZ", "UTC")  # optional timezone, default UTC
-
-# ---------- Database ----------
-client = MongoClient(MONGO_URI)
-db = client["chatstats_bot"]
-counts = db["counts"]   # documents: { chat_id, user_id, username, date: "YYYY-MM-DD", count }
-users = db["users"]     # optional user meta
-
-# Helper: today's date string in bot timezone
-def today_str(offset_days=0):
-    tzinfo = tz.gettz(TZ)
-    now = datetime.now(tzinfo) + timedelta(days=offset_days)
-    return now.strftime("%Y-%m-%d")
-
-# ---------- Message counting ----------
+# ================================
+# MESSAGE COUNTER
+# ================================
 async def count_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
+    if update.effective_chat.type not in ["group", "supergroup"]:
         return
-    chat = update.effective_chat
+
     user = update.effective_user
-    if not chat or chat.type == "private":
-        # only count in groups/supergroups
-        return
-    date = today_str(0)
-    chat_id = chat.id
-    user_id = user.id
-    username = user.full_name if not user.username else f"@{user.username}"
-    # increment
-    counts.update_one(
-        {"chat_id": chat_id, "user_id": user_id, "date": date},
-        {"$inc": {"count": 1}, "$set": {"username": username}},
+    chat = update.effective_chat
+    now = datetime.utcnow().strftime("%Y-%m-%d")
+
+    messages.update_one(
+        {"chat_id": chat.id, "user_id": user.id, "date": now},
+        {"$inc": {"count": 1}, "$set": {"username": user.username or user.first_name}},
         upsert=True,
     )
 
-# ---------- Commands ----------
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "👋 Hello! I'm GroupStatsBot.\n\n"
-        "I count messages in group and can show leaderboards.\n\n"
-        "Commands:\n"
-        "/mystats - your stats (today/week/overall)\n"
-        "/top [today|week|overall] - show top users (default today)\n"
-        "/help - this help\n\n"
-        "Add me to the group and give me permission to read messages."
-    )
-    await update.message.reply_text(text)
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start_cmd(update, context)
-
-# Stats for a user
-async def mystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-    if chat.type == "private":
-        await update.message.reply_text("Add me into a group and check stats there.")
-        return
-    chat_id = chat.id
-    user_filter = {"chat_id": chat_id, "user_id": user.id}
-
-    # today
-    today = today_str(0)
-    doc = counts.find_one({**user_filter, "date": today})
-    today_count = doc["count"] if doc else 0
-
-    # week: get last 7 days including today
-    tzinfo = tz.gettz(TZ)
-    now = datetime.now(tzinfo)
-    dates = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
-    cursor = counts.find({"chat_id": chat_id, "user_id": user.id, "date": {"$in": dates}})
-    week_total = sum([c["count"] for c in cursor])
-
-    # overall
-    cursor2 = counts.find({"chat_id": chat_id, "user_id": user.id})
-    overall = sum([c["count"] for c in cursor2])
-
-    text = f"📊 Stats for {user.full_name or user.username}:\n\n"
-    text += f"• Today: {today_count}\n"
-    text += f"• Last 7 days: {week_total}\n"
-    text += f"• Overall (since bot added): {overall}\n"
-    await update.message.reply_text(text)
-
-# Top leaderboard text or image
-def aggregate_top(chat_id, mode="today", limit=10):
-    tzinfo = tz.gettz(TZ)
-    now = datetime.now(tzinfo)
-
-    if mode == "today":
-        date = now.strftime("%Y-%m-%d")
-        pipeline = [
-            {"$match": {"chat_id": chat_id, "date": date}},
-            {"$group": {"_id": "$user_id", "username": {"$first": "$username"}, "total": {"$sum": "$count"}}},
-            {"$sort": {"total": -1}},
-            {"$limit": limit},
-        ]
-    elif mode == "week":
-        dates = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
-        pipeline = [
-            {"$match": {"chat_id": chat_id, "date": {"$in": dates}}},
-            {"$group": {"_id": "$user_id", "username": {"$first": "$username"}, "total": {"$sum": "$count"}}},
-            {"$sort": {"total": -1}},
-            {"$limit": limit},
-        ]
-    else:  # overall
-        pipeline = [
-            {"$match": {"chat_id": chat_id}},
-            {"$group": {"_id": "$user_id", "username": {"$first": "$username"}, "total": {"$sum": "$count"}}},
-            {"$sort": {"total": -1}},
-            {"$limit": limit},
-        ]
-    return list(counts.aggregate(pipeline))
-
+# ================================
+# LEADERBOARD IMAGE CREATOR
+# ================================
 def create_leaderboard_image(rows, title="Leaderboard"):
-    # rows: list of dicts with 'username' and 'total'
-    names = [r.get("username", "User") for r in rows][::-1]  # reverse for horizontal bar
-    counts_list = [r.get("total", 0) for r in rows][::-1]
+    names = [r.get("username", "User") for r in rows][::-1]
+    counts = [r.get("total", 0) for r in rows][::-1]
+    total_users = len(names)
 
-    plt.figure(figsize=(8, max(2, 0.5 * len(names) + 1)))
-    bars = plt.barh(range(len(names)), counts_list)
-    plt.yticks(range(len(names)), names, fontsize=10)
-    plt.xlabel("Messages")
-    plt.title(title)
-    for i, v in enumerate(counts_list):
-        plt.text(v + max(1, v*0.02), i, str(v), va="center")
+    plt.figure(figsize=(9, max(3, 0.7 * total_users)))
+    ax = plt.gca()
+    ax.set_facecolor("#0d0000")
+    fig = plt.gcf()
+    fig.patch.set_facecolor("#0d0000")
+
+    bars = plt.barh(
+        range(total_users),
+        counts,
+        color="#b30000",
+        edgecolor="#ff3333",
+        linewidth=1.5,
+    )
+
+    plt.yticks(range(total_users), names, fontsize=12, color="white", fontweight="bold")
+    plt.xlabel("Messages", color="white", fontsize=12)
+    plt.title(f"🏆 {title} 🏆", color="#ff6666", fontsize=16, fontweight="bold", pad=15)
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    for bar, val in zip(bars, counts):
+        ax.text(
+            bar.get_width() + max(1, val * 0.02),
+            bar.get_y() + bar.get_height() / 2,
+            f"{val}",
+            va="center",
+            ha="left",
+            color="#ffcccc",
+            fontsize=11,
+            fontweight="bold",
+        )
+
+    for bar in bars:
+        rect = patches.Rectangle(
+            (0, bar.get_y()),
+            bar.get_width(),
+            bar.get_height(),
+            linewidth=0,
+            edgecolor=None,
+            facecolor="#ff0000",
+            alpha=0.05,
+        )
+        ax.add_patch(rect)
+
+    plt.grid(axis="x", color="#331111", linestyle="--", alpha=0.3)
     plt.tight_layout()
 
     bio = BytesIO()
-    plt.savefig(bio, format="png")
+    plt.savefig(bio, format="png", dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close()
     bio.seek(0)
     return bio
 
-async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    if chat.type == "private":
-        await update.message.reply_text("Add me into a group and run this command there.")
-        return
-    mode = "today"
-    if context.args:
-        arg = context.args[0].lower()
-        if arg in ("today", "week", "overall"):
-            mode = arg
-    chat_id = chat.id
-    rows = aggregate_top(chat_id, mode=mode, limit=10)
-    if not rows:
-        await update.message.reply_text("No data yet.")
+# ================================
+# LEADERBOARD COMMAND
+# ================================
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+    mode = args[0].lower() if args else "today"
+
+    now = datetime.utcnow()
+    if mode == "week":
+        start_date = now - timedelta(days=7)
+        title_text = "This Week's Leaderboard"
+        query = {"chat_id": chat_id, "date": {"$gte": start_date.strftime("%Y-%m-%d")}}
+    elif mode == "all":
+        title_text = "All-Time Leaderboard"
+        query = {"chat_id": chat_id}
+    else:
+        today = now.strftime("%Y-%m-%d")
+        title_text = "Today's Leaderboard"
+        query = {"chat_id": chat_id, "date": today}
+
+    data = list(messages.aggregate([
+        {"$match": query},
+        {"$group": {"_id": "$username", "total": {"$sum": "$count"}}},
+        {"$sort": {"total": -1}},
+        {"$limit": 10},
+    ]))
+
+    if not data:
+        await update.message.reply_text("No messages found yet. Start chatting! 💬")
         return
 
-    # send image leaderboard
-    title_text = {"today": "Today's Leaderboard", "week": "This Week's Leaderboard", "overall": "Overall Leaderboard"}[mode]
-    bio = create_leaderboard_image(rows, title=title_text)
-    await context.bot.send_photo(chat_id=chat_id, photo=bio, caption=title_text)
+    rows = [{"username": d["_id"], "total": d["total"]} for d in data]
+    bio = create_leaderboard_image(rows, title_text)
+    caption = f"{title_text}\n\n📊 Top {len(rows)} Active Users"
 
-# ---------- Main ----------
+    await context.bot.send_photo(chat_id=chat_id, photo=bio, caption=caption)
+
+# ================================
+# PERSONAL STATS
+# ================================
+async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    data = list(messages.find({"chat_id": chat_id, "user_id": user.id}))
+
+    total = sum(d.get("count", 0) for d in data)
+    days = len(set(d["date"] for d in data))
+
+    reply = f"📈 *Your Stats, {user.first_name}*\n\n💬 Total Messages: {total}\n📅 Active Days: {days}"
+    await update.message.reply_text(reply, parse_mode="Markdown")
+
+# ================================
+# START COMMAND
+# ================================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "👋 *Welcome to ChatFight Stats Bot!*\n\n"
+        "Track your group activity with daily, weekly, and total leaderboards.\n\n"
+        "📜 Commands:\n"
+        "`/top today` — Today’s leaderboard\n"
+        "`/top week` — This week\n"
+        "`/top all` — All time\n"
+        "`/mystats` — Your message stats\n\n"
+        "Add me to your group and start chatting! 💬"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# ================================
+# MAIN ENTRY
+# ================================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-    # handlers
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("mystats", mystats_cmd))
-    app.add_handler(CommandHandler("top", top_cmd))
 
-    # message counter (count text, stickers, photos - you can extend)
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, count_message))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("mystats", my_stats))
+    app.add_handler(CommandHandler("top", leaderboard))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, count_message))
 
-    logger.info("Bot starting polling...")
+    print("🚀 ChatFight-Style Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
