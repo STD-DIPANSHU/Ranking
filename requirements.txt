@@ -1,5 +1,5 @@
 python-telegram-bot==20.6
-pymongo[srv]==4.4
-matplotlib==3.7.1
-pillow==9.5.0
-python-dateutil==2.8.2
+pymongo==4.6.1
+matplotlib==3.8.4
+numpy==1.26.4
+pillow==10.2.0
