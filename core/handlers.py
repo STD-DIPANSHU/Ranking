@@ -1,116 +1,85 @@
-# =========================================
-# 📂 core/handlers.py
-# =========================================
+# core/handlers.py
+from telegram import Update, InputMediaPhoto
+from telegram.helpers import escape_markdown
+from telegram.ext import ContextTypes
+from core.leaderboard import get_leaderboard_data, create_leaderboard_image
+from core.buttons import leaderboard_buttons  # make sure this exists and returns InlineKeyboardMarkup
 
-from telegram import Update, InlineKeyboardMarkup
-from telegram.ext import (
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
-    ContextTypes,
-)
-from core.leaderboard import create_leaderboard_image, get_leaderboard_data
-from core.buttons import get_leaderboard_buttons
-from utils.db import increment_message_count, get_user_stats
-
-
-# =========================================
-# 🚀 START COMMAND
-# =========================================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await update.message.reply_text(
-        f"👋 Welcome, {user.first_name}!\n\n"
-        "This is *ChatFight Bot* — every message you send earns XP 💬⚡\n\n"
-        "Use /leaderboard to see your ranking!",
-        parse_mode="Markdown",
-    )
-
-
-# =========================================
-# 🧠 COUNT MESSAGES
-# =========================================
-async def count_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user and not user.is_bot:
-        increment_message_count(user.id, user.first_name)
-
-
-# =========================================
-# 🏆 LEADERBOARD COMMAND
-# =========================================
+# /leaderboard [today|week|month|all]
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mode = "all"
-    data = get_leaderboard_data(mode)
-    if not data:
-        await update.message.reply_text("No data available yet 😅")
+    chat = update.effective_chat
+    if chat is None:
+        return
+    chat_id = chat.id
+    args = context.args
+    mode = args[0].lower() if args else "today"
+
+    rows, title = get_leaderboard_data(chat_id, mode)
+    if not rows:
+        await update.message.reply_text("No messages found yet 💬")
         return
 
-    # Create image
-    image_path = create_leaderboard_image(data, mode)
+    image_buf = create_leaderboard_image(rows, title)
+    # build safe caption (escape each username)
+    lines = [f"🏆 *{title}*\n"]
+    for i, r in enumerate(rows, start=1):
+        safe = escape_markdown(str(r.get("username","Unknown")), version=2)
+        lines.append(f"{i}. {safe} • {r.get('count',0)}")
+    caption = "\n".join(lines)
+    if len(caption) > 1000:
+        caption = caption[:1000] + "…"
 
-    # Send image + buttons
+    image_buf.seek(0)
     await update.message.reply_photo(
-        photo=open(image_path, "rb"),
-        caption=f"🏆 *Top ChatFighters ({mode.title()})*",
-        reply_markup=InlineKeyboardMarkup(get_leaderboard_buttons(mode)),
-        parse_mode="Markdown",
+        photo=image_buf,
+        caption=caption,
+        parse_mode="MarkdownV2",
+        reply_markup=leaderboard_buttons(mode)
     )
 
-
-# =========================================
-# 💪 MY STATS COMMAND
-# =========================================
-async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    stats = get_user_stats(user.id)
-    if not stats:
-        await update.message.reply_text("No stats found 😅 Start chatting!")
-        return
-
-    await update.message.reply_text(
-        f"📊 *Your Stats*\n\n"
-        f"👤 Name: {user.first_name}\n"
-        f"💬 Messages: {stats['count']}\n"
-        f"🏆 Rank: #{stats['rank']}",
-        parse_mode="Markdown",
-    )
-
-
-# =========================================
-# 🎯 BUTTON HANDLER
-# =========================================
+# Callback handler for button clicks (callback_data should be "today","week","month","all")
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if query is None:
+        return
     await query.answer()
+    mode = query.data or "today"
+    chat_id = query.message.chat.id
 
-    mode = query.data  # today/week/month/all
-    data = get_leaderboard_data(mode)
-    if not data:
-        await query.edit_message_caption(
-            caption="No data for this mode 😅", reply_markup=None
-        )
+    rows, title = get_leaderboard_data(chat_id, mode)
+    if not rows:
+        try:
+            await query.edit_message_caption(caption="No messages found yet 💬", reply_markup=leaderboard_buttons(mode))
+        except:
+            pass
         return
 
-    image_path = create_leaderboard_image(data, mode)
-    await query.edit_message_media(
-        media={"type": "photo", "media": open(image_path, "rb")},
-        reply_markup=InlineKeyboardMarkup(get_leaderboard_buttons(mode)),
-    )
-    await query.edit_message_caption(
-        caption=f"🏆 *Top ChatFighters ({mode.title()})*",
-        reply_markup=InlineKeyboardMarkup(get_leaderboard_buttons(mode)),
-        parse_mode="Markdown",
-    )
+    image_buf = create_leaderboard_image(rows, title)
+    image_buf.seek(0)
 
+    # safe caption again
+    lines = [f"🏆 *{title}*\n"]
+    for i, r in enumerate(rows, start=1):
+        safe = escape_markdown(str(r.get("username","Unknown")), version=2)
+        lines.append(f"{i}. {safe} • {r.get('count',0)}")
+    caption = "\n".join(lines)
+    if len(caption) > 1000:
+        caption = caption[:1000] + "…"
 
-# =========================================
-# 🧩 HANDLER SETUP FUNCTION
-# =========================================
-def register_handlers(application):
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("leaderboard", leaderboard))
-    application.add_handler(CommandHandler("mystats", my_stats))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, count_message))
-    application.add_handler(CallbackQueryHandler(button_handler))
+    media = InputMediaPhoto(media=image_buf)
+    try:
+        await query.edit_message_media(media=media)
+    except Exception:
+        # fallback: delete & send new message
+        try:
+            await query.message.delete()
+        except:
+            pass
+        await context.bot.send_photo(chat_id=chat_id, photo=image_buf, caption=caption, parse_mode="MarkdownV2", reply_markup=leaderboard_buttons(mode))
+        return
+
+    try:
+        await query.edit_message_caption(caption=caption, parse_mode="MarkdownV2", reply_markup=leaderboard_buttons(mode))
+    except:
+        # fallback to plain message
+        await context.bot.send_message(chat_id=chat_id, text=caption)
