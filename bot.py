@@ -1,9 +1,15 @@
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
-from core.handlers import leaderboard_command, callback_handler
+import os
+from telegram.ext import Application, CommandHandler
+from core.handlers import leaderboard_command
 
-app = ApplicationBuilder().token("BOT_TOKEN").build()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable not set!")
+
+app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("leaderboard", leaderboard_command))
-app.add_handler(CallbackQueryHandler(callback_handler))
 
-app.run_polling()
+if __name__ == "__main__":
+    print("✅ Bot started successfully...")
+    app.run_polling()
