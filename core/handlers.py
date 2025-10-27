@@ -3,9 +3,52 @@ from telegram import Update, InputMediaPhoto
 from telegram.helpers import escape_markdown
 from telegram.ext import ContextTypes
 from core.leaderboard import get_leaderboard_data, create_leaderboard_image
-from core.buttons import leaderboard_buttons  # make sure this exists and returns InlineKeyboardMarkup
+from core.buttons import leaderboard_buttons
+from utils.db import increment_message_count, get_user_stats
 
-# /leaderboard [today|week|month|all]
+# =================== /start command ===================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    name = user.first_name if user else "User"
+    text = (
+        f"👋 Hello {name}!\n\n"
+        f"Welcome to *ChatFight Leaderboard Bot* 🏆\n\n"
+        f"Use /leaderboard to see who's most active.\n"
+        f"Use /mystats to check your own stats.\n\n"
+        f"Let's begin 🔥"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# =================== Count messages ===================
+async def count_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    if user.is_bot:
+        return
+    username = user.username or user.first_name or "User"
+    increment_message_count(chat.id, user.id, username)
+
+# =================== /mystats command ===================
+async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return
+    stats = get_user_stats(chat.id, user.id)
+    total = stats.get("total", 0)
+    days = stats.get("days", 0)
+    avg = round(total / days, 2) if days else 0
+    text = (
+        f"📊 *Your Stats*\n\n"
+        f"💬 Total Messages: *{total}*\n"
+        f"📅 Active Days: *{days}*\n"
+        f"⚡ Avg per Day: *{avg}*"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# =================== /leaderboard command ===================
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat is None:
@@ -20,24 +63,20 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     image_buf = create_leaderboard_image(rows, title)
-    # build safe caption (escape each username)
     lines = [f"🏆 *{title}*\n"]
     for i, r in enumerate(rows, start=1):
-        safe = escape_markdown(str(r.get("username","Unknown")), version=2)
-        lines.append(f"{i}. {safe} • {r.get('count',0)}")
-    caption = "\n".join(lines)
-    if len(caption) > 1000:
-        caption = caption[:1000] + "…"
+        safe = escape_markdown(str(r.get("username", "Unknown")), version=2)
+        lines.append(f"{i}. {safe} • {r.get('count', 0)}")
+    caption = "\n".join(lines)[:1000]
 
-    image_buf.seek(0)
     await update.message.reply_photo(
         photo=image_buf,
         caption=caption,
         parse_mode="MarkdownV2",
-        reply_markup=leaderboard_buttons(mode)
+        reply_markup=leaderboard_buttons(mode),
     )
 
-# Callback handler for button clicks (callback_data should be "today","week","month","all")
+# =================== Callback buttons ===================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query is None:
@@ -48,38 +87,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rows, title = get_leaderboard_data(chat_id, mode)
     if not rows:
-        try:
-            await query.edit_message_caption(caption="No messages found yet 💬", reply_markup=leaderboard_buttons(mode))
-        except:
-            pass
+        await query.edit_message_caption(caption="No messages found yet 💬", reply_markup=leaderboard_buttons(mode))
         return
 
     image_buf = create_leaderboard_image(rows, title)
-    image_buf.seek(0)
-
-    # safe caption again
     lines = [f"🏆 *{title}*\n"]
     for i, r in enumerate(rows, start=1):
-        safe = escape_markdown(str(r.get("username","Unknown")), version=2)
-        lines.append(f"{i}. {safe} • {r.get('count',0)}")
-    caption = "\n".join(lines)
-    if len(caption) > 1000:
-        caption = caption[:1000] + "…"
+        safe = escape_markdown(str(r.get("username", "Unknown")), version=2)
+        lines.append(f"{i}. {safe} • {r.get('count', 0)}")
+    caption = "\n".join(lines)[:1000]
 
     media = InputMediaPhoto(media=image_buf)
-    try:
-        await query.edit_message_media(media=media)
-    except Exception:
-        # fallback: delete & send new message
-        try:
-            await query.message.delete()
-        except:
-            pass
-        await context.bot.send_photo(chat_id=chat_id, photo=image_buf, caption=caption, parse_mode="MarkdownV2", reply_markup=leaderboard_buttons(mode))
-        return
-
-    try:
-        await query.edit_message_caption(caption=caption, parse_mode="MarkdownV2", reply_markup=leaderboard_buttons(mode))
-    except:
-        # fallback to plain message
-        await context.bot.send_message(chat_id=chat_id, text=caption)
+    await query.edit_message_media(media=media)
+    await query.edit_message_caption(
+        caption=caption,
+        parse_mode="MarkdownV2",
+        reply_markup=leaderboard_buttons(mode),
+    )
