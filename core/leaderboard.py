@@ -1,91 +1,72 @@
-# =========================================
-# 📂 core/leaderboard.py
-# =========================================
-
+# core/leaderboard.py
+import io
+import matplotlib
+matplotlib.rcParams['font.family'] = 'DejaVu Sans'  # safer default on Heroku for many glyphs
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-from io import BytesIO
-import os
-
 from utils.db import get_leaderboard_from_db
-from utils.image_theme import get_theme_colors
 
-
-# =========================================
-# 🧠 FETCH DATA
-# =========================================
-def get_leaderboard_data(mode: str):
-    """
-    mode: today / week / month / all
-    """
+def get_leaderboard_data(chat_id: int, mode: str):
     now = datetime.utcnow()
-
     if mode == "today":
-        start_date = now.strftime("%Y-%m-%d")
-        query = {"date": start_date}
+        query = {"chat_id": chat_id, "date": now.strftime("%Y-%m-%d")}
+        title = "Today's Leaderboard"
     elif mode == "week":
-        start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
-        query = {"date": {"$gte": start_date}}
+        start = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+        query = {"chat_id": chat_id, "date": {"$gte": start}}
+        title = "This Week's Leaderboard"
     elif mode == "month":
-        start_date = (now - timedelta(days=30)).strftime("%Y-%m-%d")
-        query = {"date": {"$gte": start_date}}
+        start = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+        query = {"chat_id": chat_id, "date": {"$gte": start}}
+        title = "This Month's Leaderboard"
     else:
-        query = {}
+        query = {"chat_id": chat_id}
+        title = "All-Time Leaderboard"
 
-    return get_leaderboard_from_db(query)
+    rows = get_leaderboard_from_db(query)
+    return rows, title
 
+def create_leaderboard_image(rows, title="Leaderboard"):
+    # rows: list of {"username": ..., "count": ...} (top first)
+    if not rows:
+        # simple placeholder image
+        fig, ax = plt.subplots(figsize=(6,2))
+        ax.axis('off')
+        ax.text(0.5, 0.5, "No data yet", ha='center', va='center', fontsize=16, color='white')
+        fig.patch.set_facecolor('#0d0000')
+        ax.set_facecolor('#0d0000')
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', facecolor=fig.get_facecolor(), dpi=150)
+        plt.close(fig)
+        buf.seek(0)
+        return buf
 
-# =========================================
-# 🎨 IMAGE CREATOR
-# =========================================
-def create_leaderboard_image(rows, mode="all"):
-    colors = get_theme_colors()
-    names = [r["username"] for r in rows][::-1]
+    names = [r["username"] for r in rows][::-1]   # reverse for horizontal bar order
     counts = [r["count"] for r in rows][::-1]
-    total_users = len(names)
 
-    fig, ax = plt.subplots(figsize=(9, max(3, 0.6 * total_users)))
-    fig.patch.set_facecolor(colors["bg"])
-    ax.set_facecolor(colors["bg"])
+    fig, ax = plt.subplots(figsize=(8, max(3, 0.6 * len(names))))
+    fig.patch.set_facecolor('#0d0000')
+    ax.set_facecolor('#0d0000')
 
-    bars = ax.barh(
-        range(total_users),
-        counts,
-        color=colors["bar"],
-        edgecolor=colors["bar_edge"],
-        linewidth=1.5,
-    )
-
-    ax.set_yticks(range(total_users))
-    ax.set_yticklabels(names, fontsize=11, color=colors["text"], fontweight="bold")
-    ax.set_xlabel("Messages", color=colors["text"])
-    ax.set_title(
-        f"🏆 ChatFight {mode.title()} Leaderboard 🏆",
-        color=colors["title"],
-        fontsize=15,
-        fontweight="bold",
-        pad=15,
-    )
+    bars = ax.barh(range(len(names)), counts, color='#b30000', edgecolor='#ff3333', linewidth=1.2)
+    ax.set_yticks(range(len(names)))
+    ax.set_yticklabels(names, color='white', fontsize=11)
+    ax.invert_yaxis()
+    ax.set_xlabel('Messages', color='white')
+    ax.set_title(title, color='#ff6666', fontsize=14, pad=10)
 
     for bar, val in zip(bars, counts):
-        ax.text(
-            bar.get_width() + 1,
-            bar.get_y() + bar.get_height() / 2,
-            f"{val}",
-            va="center",
-            ha="left",
-            color=colors["accent"],
-            fontsize=10,
-            fontweight="bold",
-        )
+        ax.text(bar.get_width() + max(1, val*0.01), bar.get_y() + bar.get_height()/2,
+                f"{val}", va='center', color='#ffcccc', fontsize=10)
 
     for spine in ax.spines.values():
         spine.set_visible(False)
 
-    ax.grid(axis="x", color=colors["grid"], linestyle="--", alpha=0.3)
+    ax.grid(axis='x', color='#331111', linestyle='--', alpha=0.3)
     plt.tight_layout()
 
-    img_path = f"/tmp/leaderboard_{mode}.png"
-    plt.savefig(img_path, bbox_inches="tight", dpi=150, facecolor=fig.get_facecolor())
-    plt.close()
-    return img_path
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight', facecolor=fig.get_facecolor(), dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
