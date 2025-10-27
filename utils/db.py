@@ -1,38 +1,55 @@
-# utils/db.py
-from pymongo import MongoClient
-import os
-from datetime import datetime
+from motor.motor_asyncio import AsyncIOMotorClient
+import datetime
+from config.settings import MONGO_URL
 
-MONGO_URL = os.getenv("MONGO_URL")
-client = MongoClient(MONGO_URL) if MONGO_URL else MongoClient()
-db = client["chatfight_bot"]
-messages_collection = db["messages"]
+client = AsyncIOMotorClient(MONGO_URL)
+db = client["chatfight_db"]
+messages = db["messages"]
 
-def increment_message_count(chat_id: int, user_id: int, username: str):
-    date = datetime.utcnow().strftime("%Y-%m-%d")
-    messages_collection.update_one(
-        {"chat_id": chat_id, "user_id": user_id, "date": date},
-        {"$inc": {"count": 1}, "$set": {"username": username}},
-        upsert=True,
+async def add_message(chat_id: int, user_id: int, user_name: str):
+    """Store message count"""
+    today = datetime.datetime.utcnow().date()
+    week = today.isocalendar().week
+
+    await messages.update_one(
+        {"chat_id": chat_id, "user_id": user_id},
+        {
+            "$inc": {
+                "overall": 1,
+                f"daily.{today.isoformat()}": 1,
+                f"weekly.{week}": 1
+            },
+            "$set": {"name": user_name}
+        },
+        upsert=True
     )
 
-def get_leaderboard_from_db(query: dict):
-    """
-    query: a Mongo-style dict for date/chat_id filter, e.g. {"chat_id": 123, "date": "2025-10-26"}
-    returns: list of dicts: [{"username": "...", "count": N}, ...]
-    """
-    pipeline = [
-        {"$match": query},
-        {"$group": {"_id": "$username", "count": {"$sum": "$count"}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 10},
-    ]
-    data = list(messages_collection.aggregate(pipeline))
-    # normalize
-    return [{"username": d["_id"] or "Unknown", "count": d["count"]} for d in data]
+async def get_top_users(chat_id: int, scope: str):
+    """Return top 10 users according to scope (overall/today/week)"""
+    today = datetime.datetime.utcnow().date()
+    week = today.isocalendar().week
 
-def get_user_stats(chat_id: int, user_id: int):
-    docs = list(messages_collection.find({"chat_id": chat_id, "user_id": user_id}))
-    total = sum(d.get("count", 0) for d in docs)
-    days = len(set(d["date"] for d in docs))
-    return {"total": total, "days": days}
+    cursor = None
+    if scope == "overall":
+        cursor = messages.find({"chat_id": chat_id}).sort("overall", -1).limit(10)
+    elif scope == "today":
+        cursor = messages.find({"chat_id": chat_id}).sort(f"daily.{today.isoformat()}", -1).limit(10)
+    elif scope == "week":
+        cursor = messages.find({"chat_id": chat_id}).sort(f"weekly.{week}", -1).limit(10)
+    else:
+        return []
+
+    data = []
+    async for doc in cursor:
+        count = (
+            doc.get("overall", 0)
+            if scope == "overall" else
+            doc.get("daily", {}).get(today.isoformat(), 0)
+            if scope == "today" else
+            doc.get("weekly", {}).get(week, 0)
+        )
+        data.append({
+            "name": doc.get("name", "Unknown"),
+            "count": count
+        })
+    return data
