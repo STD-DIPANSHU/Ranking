@@ -1,36 +1,26 @@
-# =========================================
-# 📂 utils/db.py
-# =========================================
-
+# utils/db.py
 from pymongo import MongoClient
 import os
+from datetime import datetime
 
-# ================================
-# DATABASE CONNECTION
-# ================================
 MONGO_URL = os.getenv("MONGO_URL")
-client = MongoClient(MONGO_URL)
+client = MongoClient(MONGO_URL) if MONGO_URL else MongoClient()
 db = client["chatfight_bot"]
 messages_collection = db["messages"]
 
-# ================================
-# 💾 Message Counting
-# ================================
-def increment_message_count(chat_id: int, user_id: int, username: str, date: str):
-    """Add or update message count per user per day"""
+def increment_message_count(chat_id: int, user_id: int, username: str):
+    date = datetime.utcnow().strftime("%Y-%m-%d")
     messages_collection.update_one(
         {"chat_id": chat_id, "user_id": user_id, "date": date},
         {"$inc": {"count": 1}, "$set": {"username": username}},
         upsert=True,
     )
 
-# ✅ backward compatibility (if old code used save_message)
-save_message = increment_message_count
-
-# ================================
-# 📊 Leaderboard Data Fetch
-# ================================
 def get_leaderboard_from_db(query: dict):
+    """
+    query: a Mongo-style dict for date/chat_id filter, e.g. {"chat_id": 123, "date": "2025-10-26"}
+    returns: list of dicts: [{"username": "...", "count": N}, ...]
+    """
     pipeline = [
         {"$match": query},
         {"$group": {"_id": "$username", "count": {"$sum": "$count"}}},
@@ -38,13 +28,11 @@ def get_leaderboard_from_db(query: dict):
         {"$limit": 10},
     ]
     data = list(messages_collection.aggregate(pipeline))
-    return [{"username": d["_id"], "count": d["count"]} for d in data]
+    # normalize
+    return [{"username": d["_id"] or "Unknown", "count": d["count"]} for d in data]
 
-# ================================
-# 🧍‍♂️ Personal Stats
-# ================================
 def get_user_stats(chat_id: int, user_id: int):
-    data = list(messages_collection.find({"chat_id": chat_id, "user_id": user_id}))
-    total = sum(d.get("count", 0) for d in data)
-    days = len(set(d["date"] for d in data))
-    return total, days
+    docs = list(messages_collection.find({"chat_id": chat_id, "user_id": user_id}))
+    total = sum(d.get("count", 0) for d in docs)
+    days = len(set(d["date"] for d in docs))
+    return {"total": total, "days": days}
