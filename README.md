@@ -21,7 +21,7 @@ with a **ChatFight-style red glowing theme** 🔥
 
 Click this button 👇 to deploy your own version instantly:  
 
-[![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/STD-DEEPANSHU/Ranking)
+[![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/STD-DIPANSHU/Ranking)
 
 > 🔧 Replace `your-username` with your actual GitHub username before pushing.
 
